@@ -15,7 +15,8 @@ export const slackService = {
 
   connectSlack: () => {
     const backendUrl = getBackendUrl();
-    window.location.href = `${backendUrl}/api/slack/connect`;
+    const currentOrigin = window.location.origin;
+    window.location.href = `${backendUrl}/api/slack/connect?redirect_origin=${encodeURIComponent(currentOrigin)}`;
   },
 
   disconnectSlack: async () => {

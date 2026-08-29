@@ -16,7 +16,7 @@ export default function Login() {
             Reach<span className="text-[#C2410C]">Inbox</span> Scheduler
           </h2>
           <p className="mt-2 text-sm text-[#78716C]">
-            Sign in to manage and schedule your email outreach campaigns
+            Sign in to manage and schedule your email outreach
           </p>
         </div>
 

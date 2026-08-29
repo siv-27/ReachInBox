@@ -43,8 +43,15 @@ export class SchedulerService {
 
     // 2. Queue corresponding delayed jobs in BullMQ storing original recipient details in job payload.
     for (const email of dbEmails) {
+      // Calculate delay in milliseconds. If already due, queue with delay 0 (immediate execution).
       const delay = Math.max(0, new Date(email.scheduledAt).getTime() - Date.now());
       
+      console.log(`[SchedulerService] Scheduling email ${email.id}:`);
+      console.log(`  Recipient: ${email.recipient}`);
+      console.log(`  ScheduledAt: ${email.scheduledAt.toISOString()}`);
+      console.log(`  Current Date.now(): ${new Date().toISOString()}`);
+      console.log(`  Calculated BullMQ Delay: ${delay} ms`);
+
       try {
         const job = await emailQueue.add(
           'send-email',
@@ -91,5 +98,64 @@ export class SchedulerService {
     }
 
     return scheduledEmails;
+  }
+
+  /**
+   * Safe recovery mechanism: Finds past-due emails in SCHEDULED state (scheduledAt <= now)
+   * and enqueues them for immediate execution (delay = 0).
+   */
+  static async recoverStaleScheduledEmails(): Promise<number> {
+    try {
+      const now = new Date();
+      const staleEmails = await prisma.email.findMany({
+        where: {
+          status: 'SCHEDULED',
+          scheduledAt: {
+            lte: now,
+          },
+        },
+        take: 50,
+      });
+
+      if (staleEmails.length === 0) {
+        return 0;
+      }
+
+      console.log(`[SchedulerRecovery] Found ${staleEmails.length} past-due scheduled emails. Queueing for immediate execution...`);
+
+      let enqueuedCount = 0;
+      for (const email of staleEmails) {
+        try {
+          const job = await emailQueue.add(
+            'send-email',
+            {
+              emailId: email.id,
+              recipient: email.recipient,
+              subject: email.subject,
+              scheduledAt: email.scheduledAt.toISOString(),
+            },
+            {
+              jobId: `email-${email.id}-recover-${Date.now()}`,
+              delay: 0, // Process immediately
+            }
+          );
+
+          await prisma.email.update({
+            where: { id: email.id },
+            data: { bullmqJobId: job.id },
+          }).catch(() => {});
+
+          enqueuedCount++;
+          console.log(`[SchedulerRecovery] Enqueued past-due email ${email.id} (recipient: ${email.recipient})`);
+        } catch (err: any) {
+          console.error(`[SchedulerRecovery] Failed to enqueue past-due email ${email.id}:`, err.message);
+        }
+      }
+
+      return enqueuedCount;
+    } catch (error: any) {
+      console.error('[SchedulerRecovery] Exception during stale email recovery:', error.message);
+      return 0;
+    }
   }
 }

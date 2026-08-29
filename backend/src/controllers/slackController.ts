@@ -17,9 +17,10 @@ export class SlackController {
         return;
       }
 
+      const redirectOrigin = String(req.query.redirect_origin || req.headers.referer || '').replace(/\/$/, '');
+
       // Safe diagnostic logging — never logs the client secret
       console.log('[SlackController] Slack Client ID exists:', !!config.slackClientId);
-      console.log('[SlackController] Slack Client ID length:', config.slackClientId.length);
       console.log('[SlackController] Slack Redirect URI:', config.slackRedirectUri);
 
       if (!config.slackClientId) {
@@ -28,8 +29,8 @@ export class SlackController {
         return;
       }
 
-      // Generate a signed JWT token for the state parameter to prevent CSRF attacks
-      const state = jwt.sign({ userId }, config.jwtSecret, { expiresIn: '15m' });
+      // Generate a signed JWT token for the state parameter including user origin
+      const state = jwt.sign({ userId, origin: redirectOrigin }, config.jwtSecret, { expiresIn: '15m' });
 
       // Request chat:write scope to post alerts, and incoming-webhook to get a channel selection
       const slackAuthUrl = 'https://slack.com/oauth/v2/authorize?' + new URLSearchParams({
@@ -52,9 +53,11 @@ export class SlackController {
   static async callback(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     const { code, state, error: slackError } = req.query;
 
+    let frontendBase = process.env.FRONTEND_URL || config.frontendUrl || 'http://localhost:5173';
+
     if (slackError) {
       console.warn('[SlackController] OAuth error returned from Slack:', slackError);
-      res.redirect(`${config.frontendUrl}/?error=slack_access_denied`);
+      res.redirect(`${frontendBase}/dashboard?error=slack_access_denied`);
       return;
     }
 
@@ -64,21 +67,26 @@ export class SlackController {
     }
 
     try {
-      // 1. Verify CSRF state token and retrieve userId
+      // 1. Verify CSRF state token and retrieve userId & origin
       let userId: string;
       try {
-        const decoded = jwt.verify(String(state), config.jwtSecret) as { userId: string };
+        const decoded = jwt.verify(String(state), config.jwtSecret) as { userId: string; origin?: string };
         userId = decoded.userId;
+        if (decoded.origin && (decoded.origin.startsWith('http://') || decoded.origin.startsWith('https://'))) {
+          frontendBase = decoded.origin;
+        }
       } catch (err) {
         res.status(400).json({ message: 'Invalid or expired state parameter' });
         return;
       }
 
+      frontendBase = frontendBase.replace(/\/$/, '');
+
       // 2. Exchange code for access token
       const oauthResult = await SlackService.exchangeCode(String(code));
       if (!oauthResult.ok || !oauthResult.accessToken || !oauthResult.teamId) {
         console.error('[SlackController] OAuth exchange failed:', oauthResult.error);
-        res.redirect(`${config.frontendUrl}/?error=slack_auth_failed`);
+        res.redirect(`${frontendBase}/dashboard?error=slack_auth_failed`);
         return;
       }
 
@@ -105,7 +113,7 @@ export class SlackController {
       console.log(`[SlackController] Successfully connected Slack team ${oauthResult.teamId} for user ${userId}`);
 
       // Redirect user back to the frontend dashboard
-      res.redirect(`${config.frontendUrl}/`);
+      res.redirect(`${frontendBase}/dashboard`);
     } catch (error) {
       next(error);
     }

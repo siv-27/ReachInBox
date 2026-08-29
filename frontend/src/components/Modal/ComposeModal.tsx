@@ -115,7 +115,17 @@ export const ComposeModal: React.FC<ComposeModalProps> = ({
       return;
     }
 
-    const startTimestamp = new Date(startTime).getTime();
+    const startDate = new Date(startTime);
+    const startTimestamp = startDate.getTime();
+
+    if (isNaN(startTimestamp)) {
+      setModalError('Invalid start date and time format.');
+      return;
+    }
+
+    // Convert local datetime-local selection to explicit ISO 8601 UTC timestamp string
+    const isoStartTime = startDate.toISOString();
+
     if (startTimestamp < Date.now() - 5000) {
       setModalError('Start time must be in the future.');
       return;
@@ -130,7 +140,7 @@ export const ComposeModal: React.FC<ComposeModalProps> = ({
         recipients: csvEmails,
         subject,
         body,
-        startTime,
+        startTime: isoStartTime,
         delayBetweenEmails: delay * 1000,
         hourlyLimit,
       });
@@ -141,7 +151,7 @@ export const ComposeModal: React.FC<ComposeModalProps> = ({
       onSuccess();
     } catch (err: any) {
       console.error('[ComposeModal] Scheduling failed:', err);
-      setModalError(err.response?.data?.message || 'Failed to schedule campaign. Please verify input fields.');
+      setModalError(err.response?.data?.message || 'Failed to schedule outreach. Please verify input fields.');
     } finally {
       setLoading(false);
     }
@@ -154,7 +164,7 @@ export const ComposeModal: React.FC<ComposeModalProps> = ({
         onClose();
         resetForm();
       }}
-      title="Compose Outreach Campaign"
+      title="Compose Outreach"
       errorMessage={modalError}
     >
       <form onSubmit={handleSubmit} className="space-y-5">
@@ -184,7 +194,7 @@ export const ComposeModal: React.FC<ComposeModalProps> = ({
 
         <Input
           type="datetime-local"
-          label="Campaign Launch Time"
+          label="Outreach Launch Time"
           value={startTime}
           onChange={(e) => setStartTime(e.target.value)}
           required
@@ -210,7 +220,7 @@ export const ComposeModal: React.FC<ComposeModalProps> = ({
         </div>
 
         {modalError && (
-          <div className="bg-red-50 border border-red-200 text-[#B91C1C] p-3 rounded-lg text-xs flex items-center gap-2">
+          <div className="bg-[#FFF7ED] border border-[#FFEDD5] text-[#B91C1C] p-3 rounded-lg text-xs flex items-center gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-[#B91C1C] inline-block shrink-0" />
             <span>{modalError}</span>
           </div>
@@ -228,7 +238,7 @@ export const ComposeModal: React.FC<ComposeModalProps> = ({
             Cancel
           </Button>
           <Button type="submit" isLoading={loading}>
-            Schedule Campaign
+            Schedule Outreach
           </Button>
         </div>
       </form>

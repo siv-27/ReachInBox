@@ -69,12 +69,25 @@ export class EmailController {
 
       if (!startTime || isNaN(Date.parse(startTime))) {
         errors.startTime = 'Invalid start time format';
-      } else if (new Date(startTime).getTime() < Date.now() - 5000) {
-        res.status(400).json({
-          message: 'Start time must be in the future',
-          errors: { startTime: 'Start time must be in the future' }
-        });
-        return;
+      } else {
+        const parsedScheduledDate = new Date(startTime);
+        const now = new Date();
+        const delayMs = parsedScheduledDate.getTime() - now.getTime();
+
+        console.log('[EmailController] Timezone & Schedule Diagnostics:');
+        console.log(`  Frontend scheduled time: ${startTime}`);
+        console.log(`  Backend parsed scheduled time: ${parsedScheduledDate.toISOString()}`);
+        console.log(`  Current server time: ${now.toISOString()}`);
+        console.log(`  Calculated launch delay: ${delayMs} ms`);
+        console.log(`  Server Timezone offset: ${now.getTimezoneOffset()} minutes`);
+
+        if (delayMs < -5000) {
+          res.status(400).json({
+            message: 'Start time must be in the future',
+            errors: { startTime: 'Start time must be in the future' }
+          });
+          return;
+        }
       }
 
       const delayMs = parseInt(String(delayBetweenEmails !== undefined ? delayBetweenEmails : 0), 10);

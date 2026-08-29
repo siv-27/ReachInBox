@@ -40,7 +40,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             Welcome back, {user?.name?.split(' ')[0] || 'User'}!
           </h3>
           <p className="text-[#78716C] text-sm">
-            Your Google OAuth session is active. Create new campaigns and inspect scheduled outreach statistics.
+            Your Google OAuth session is active. Create new outreach and inspect scheduled outreach statistics.
           </p>
         </div>
         <Button leftIcon={<Plus className="w-4 h-4" />} onClick={onOpenCompose}>

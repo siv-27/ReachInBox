@@ -15,7 +15,7 @@ import { ElasticsearchService } from '../services/elasticsearchService';
  */
 export async function sendEmailProcessor(job: Job<EmailJobData>): Promise<void> {
   const { emailId } = job.data;
-  console.log(`[Worker] Executing job ${job.id} (attempt ${job.attemptsMade + 1}) for email ID: ${emailId}`);
+  console.log(`[EmailWorker] Job received: ${job.id} (attempt ${job.attemptsMade + 1}) for email ID: ${emailId}`);
 
   // Fetch the email record from PostgreSQL to inspect current state
   let email;
@@ -24,18 +24,18 @@ export async function sendEmailProcessor(job: Job<EmailJobData>): Promise<void> 
       where: { id: emailId },
     });
   } catch (dbErr: any) {
-    console.error(`[Worker] Database query failed for email ${emailId}:`, dbErr.message);
+    console.error(`[EmailWorker] Database query failed for email ${emailId}:`, dbErr.message);
     throw dbErr; // Let BullMQ retry when database connection recovers
   }
 
   if (!email) {
-    console.warn(`[Worker] Job aborted. Email record not found in database for ID: ${emailId}`);
+    console.warn(`[EmailWorker] Job aborted. Email record not found in database for ID: ${emailId}`);
     return;
   }
 
   // Idempotency: only process if status is SCHEDULED
   if (email.status !== 'SCHEDULED') {
-    console.log(`[Worker] Idempotency: Email ${emailId} is in status ${email.status}. Skipping.`);
+    console.log(`[EmailWorker] Idempotency: Email ${emailId} is in status ${email.status}. Skipping.`);
     return;
   }
 
@@ -44,27 +44,32 @@ export async function sendEmailProcessor(job: Job<EmailJobData>): Promise<void> 
   
   if (!limitResult.allowed) {
     const delay = limitResult.rescheduleDelayMs || 5000;
-    console.log(`[Worker] Email ${emailId} is throttled due to ${limitResult.reason}. Rescheduling in ${delay}ms...`);
+    console.log(`[EmailWorker] Email ${emailId} is throttled due to ${limitResult.reason}. Rescheduling in ${delay}ms...`);
     
     // If throttled due to reaching the hourly rate limit, fire a Slack alert (deduplicated via Redis)
     if (limitResult.reason === 'RATE_LIMIT') {
       try {
         const locked = await RateLimitService.acquireAlertLock(email.sender);
         if (locked) {
-          console.log(`[Worker] Sender ${email.sender} hit hourly quota. Initiating Slack notification dispatcher.`);
+          console.log(`[EmailWorker] Sender ${email.sender} hit hourly quota. Initiating Slack notification dispatcher.`);
           SlackService.postMessage(email.userId, email.sender, config.maxEmailsPerHour).catch((err) => {
-            console.error('[Worker] Slack notification dispatcher failed:', err);
+            console.error('[EmailWorker] Slack notification dispatcher failed:', err);
           });
         }
       } catch (err) {
-        console.error('[Worker] Slack alert lock check failed (ignored):', err);
+        console.error('[EmailWorker] Slack alert lock check failed (ignored):', err);
       }
     }
 
     // Reschedule in BullMQ using a unique jobId suffix to prevent removeOnComplete collisions
     await emailQueue.add(
       'send-email',
-      { emailId: email.id },
+      {
+        emailId: email.id,
+        recipient: email.recipient,
+        subject: email.subject,
+        scheduledAt: email.scheduledAt.toISOString(),
+      },
       {
         jobId: `email-${email.id}-r-${Date.now()}`,
         delay,
@@ -74,6 +79,7 @@ export async function sendEmailProcessor(job: Job<EmailJobData>): Promise<void> 
   }
 
   // 2. Acquired rate limit slots! Transition PostgreSQL status from SCHEDULED to PROCESSING.
+  console.log(`[EmailWorker] Updating email ${emailId}: SCHEDULED -> PROCESSING`);
   let updateResult;
   try {
     updateResult = await prisma.email.updateMany({
@@ -86,13 +92,13 @@ export async function sendEmailProcessor(job: Job<EmailJobData>): Promise<void> 
       },
     });
   } catch (dbErr: any) {
-    console.error(`[Worker] Database status update to PROCESSING failed for email ${emailId}:`, dbErr.message);
+    console.error(`[EmailWorker] Database status update to PROCESSING failed for email ${emailId}:`, dbErr.message);
     await RateLimitService.releaseSlot(email.sender).catch(() => {});
     throw dbErr;
   }
 
   if (updateResult.count === 0) {
-    console.warn(`[Worker] Idempotency: Email ${emailId} was claimed concurrently. Releasing slot.`);
+    console.warn(`[EmailWorker] Idempotency: Email ${emailId} was claimed concurrently. Releasing slot.`);
     await RateLimitService.releaseSlot(email.sender).catch(() => {});
     return;
   }
@@ -106,13 +112,15 @@ export async function sendEmailProcessor(job: Job<EmailJobData>): Promise<void> 
 
   try {
     // 3. Dispatch the email via SMTP provider
-    console.log(`[Worker] Dispatching email ${emailId} to ${email.recipient}`);
+    console.log(`[EmailWorker] Dispatching email ${emailId} to ${email.recipient}`);
     const sendResult = await EmailService.sendEmail(
       email.sender,
       email.recipient,
       email.subject,
       email.body
     );
+
+    console.log(`[EmailWorker] Email sent successfully to ${email.recipient}`);
 
     // 4. Mark the email as SENT in PostgreSQL
     await prisma.email.update({
@@ -126,16 +134,18 @@ export async function sendEmailProcessor(job: Job<EmailJobData>): Promise<void> 
       },
     });
 
+    console.log(`[EmailWorker] Email status updated: PROCESSING -> SENT`);
+
     // Update in Elasticsearch (non-blocking async call)
     ElasticsearchService.updateEmailStatus(emailId, 'SENT', { sentAt: new Date().toISOString() }).catch(() => {});
 
-    console.log(`[Worker] Email ${emailId} successfully sent! Preview URL: ${sendResult.previewUrl || 'none'}`);
+    console.log(`[EmailWorker] Job ${job.id} completed successfully. Preview URL: ${sendResult.previewUrl || 'none'}`);
   } catch (error: any) {
     const isRateLimited = error.message?.includes('429') || error.message?.toLowerCase().includes('rate limit');
-    console.error(`[Worker] Error sending email ${emailId} (attempt ${job.attemptsMade + 1}):`, error.message);
+    console.error(`[EmailWorker] Error sending email ${emailId} (attempt ${job.attemptsMade + 1}):`, error.message);
 
     // Revert the reserved rate-limit slot since the send failed
-    console.log(`[Worker] Releasing rate limit slot for sender ${email.sender} due to exception.`);
+    console.log(`[EmailWorker] Releasing rate limit slot for sender ${email.sender} due to exception.`);
     await RateLimitService.releaseSlot(email.sender).catch(() => {});
 
     if (isFinalAttempt) {
@@ -147,12 +157,12 @@ export async function sendEmailProcessor(job: Job<EmailJobData>): Promise<void> 
           failedAt: new Date(),
           error: error.message || 'SMTP sending failed permanently',
         },
-      }).catch((dbErr) => console.error('[Worker] Failed to update status to FAILED:', dbErr));
+      }).catch((dbErr) => console.error('[EmailWorker] Failed to update status to FAILED:', dbErr));
 
       // Update in Elasticsearch (non-blocking async call)
       ElasticsearchService.updateEmailStatus(emailId, 'FAILED', { sentAt: null }).catch(() => {});
 
-      console.log(`[Worker] Email ${emailId} marked as FAILED permanently after all retries.`);
+      console.log(`[EmailWorker] Email ${emailId} status updated: PROCESSING -> FAILED after max retries.`);
     } else {
       // Temporary failure (including 429 rate limit): reset status to SCHEDULED for worker retry backoff
       const errDetail = isRateLimited
@@ -165,12 +175,12 @@ export async function sendEmailProcessor(job: Job<EmailJobData>): Promise<void> 
           status: 'SCHEDULED',
           error: errDetail,
         },
-      }).catch((dbErr) => console.error('[Worker] Failed to update status to SCHEDULED:', dbErr));
+      }).catch((dbErr) => console.error('[EmailWorker] Failed to update status to SCHEDULED:', dbErr));
 
       // Update in Elasticsearch (non-blocking async call)
       ElasticsearchService.updateEmailStatus(emailId, 'SCHEDULED').catch(() => {});
 
-      console.log(`[Worker] Email ${emailId} reset to SCHEDULED state for worker retry.`);
+      console.log(`[EmailWorker] Email ${emailId} reset to SCHEDULED state for worker retry.`);
     }
 
     // Rethrow error so BullMQ handles exponential backoff delay before next retry
@@ -192,19 +202,19 @@ export function startEmailWorker() {
   );
 
   worker.on('ready', () => {
-    console.log(`[Worker] Connected. Queue: ${queueConfig.name}. Concurrency: ${queueConfig.concurrency}`);
+    console.log(`[EmailWorker] Connected. Queue: ${queueConfig.name}. Concurrency: ${queueConfig.concurrency}`);
   });
 
   worker.on('active', (job) => {
-    console.log(`[Worker] Job active: ${job.id}`);
+    console.log(`[EmailWorker] Job active: ${job.id}`);
   });
 
   worker.on('completed', (job) => {
-    console.log(`[Worker] Job completed: ${job.id}`);
+    console.log(`[EmailWorker] Job completed: ${job.id}`);
   });
 
   worker.on('failed', (job, err) => {
-    console.error(`[Worker] Job failed: ${job?.id}. Error: ${err?.message}`);
+    console.error(`[EmailWorker] Job failed: ${job?.id}. Error: ${err?.message}`);
   });
 
   return worker;

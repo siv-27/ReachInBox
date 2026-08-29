@@ -43,7 +43,7 @@ export const ScheduledEmailsPage: React.FC<ScheduledEmailsPageProps> = ({
   return (
     <Card className="space-y-6">
       <div className="space-y-1">
-        <h3 className="text-lg font-bold text-[#292524]">Scheduled Outreach Campaigns</h3>
+        <h3 className="text-lg font-bold text-[#292524]">Scheduled Outreaches</h3>
         <p className="text-xs text-[#78716C]">
           Emails queued in Upstash Redis / BullMQ waiting for their scheduled launch time.
         </p>
