@@ -1,4 +1,5 @@
 import api from './api';
+import { getBackendUrl } from '../config/env';
 
 export interface SlackStatusResponse {
   connected: boolean;
@@ -13,7 +14,7 @@ export const slackService = {
   },
 
   connectSlack: () => {
-    const backendUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+    const backendUrl = getBackendUrl();
     window.location.href = `${backendUrl}/api/slack/connect`;
   },
 

@@ -1,4 +1,5 @@
 import api from './api';
+import { getBackendUrl } from '../config/env';
 
 export interface QueueJob {
   id: string;
@@ -32,7 +33,7 @@ export const queueService = {
   },
 
   createQueueEventsStream: (): EventSource => {
-    const backendUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+    const backendUrl = getBackendUrl();
     return new EventSource(`${backendUrl}/api/queue/events`, {
       withCredentials: true,
     });

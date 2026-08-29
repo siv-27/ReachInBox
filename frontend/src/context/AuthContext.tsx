@@ -1,6 +1,7 @@
 import { createContext, useState, useEffect, type ReactNode } from 'react';
 import type { User, AuthContextType } from '../types/auth';
 import api from '../services/api';
+import { getBackendUrl } from '../config/env';
 
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -24,7 +25,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = () => {
-    const backendUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+    const backendUrl = getBackendUrl();
     window.location.href = `${backendUrl}/api/auth/google`;
   };
 
